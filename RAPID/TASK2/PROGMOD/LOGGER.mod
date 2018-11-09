@@ -23,23 +23,26 @@ MODULE LOGGER
     VAR zonedata currentZone2;
     PERS num loggerWaitTime2;
 
-    PROC ServerCreateAndConnect(string ip,num port)
+    !Handshake between server and client:
+    ! - Creates socket.
+    ! - Waits for incoming TCP connection.
+    PROC ServerCreateAndConnect(string ip,num port,string modname)
         VAR string clientIP;
 
         SocketCreate serverSocket;
         SocketBind serverSocket,ip,port;
         SocketListen serverSocket;
-        TPWrite "LOGGER: Logger waiting for incomming connections ...";
+        TPWrite modname+": Waiting incoming connections...";
         WHILE SocketGetStatus(clientSocket)<>SOCKET_CONNECTED DO
             SocketAccept serverSocket,clientSocket\ClientAddress:=clientIP\Time:=WAIT_MAX;
             IF SocketGetStatus(clientSocket)<>SOCKET_CONNECTED THEN
-                TPWrite "LOGGER: Problem serving an incomming connection.";
-                TPWrite "LOGGER: Try reconnecting.";
+                TPWrite modname+": Problem serving an incoming connection.";
+                TPWrite modname+": Try reconnecting.";
             ENDIF
-            !Wait 0.5 seconds for the next reconnection
+            !//Wait 0.5 seconds for the next reconnection
             WaitTime 0.5;
         ENDWHILE
-        TPWrite "LOGGER: Connected to IP "+clientIP;
+        TPWrite modname+": Connected to "+clientIP+":"+NumToStr(port, 0);
     ENDPROC
 
     PROC main()
@@ -65,7 +68,7 @@ MODULE LOGGER
         time:=CTime();
 
         connected:=FALSE;
-        ServerCreateAndConnect ipController2,loggerPort2;
+        ServerCreateAndConnect ipController2,loggerPort2,"LOGGER";
         connected:=TRUE;
         WHILE TRUE DO
 
@@ -120,7 +123,7 @@ MODULE LOGGER
         SocketClose clientSocket;
         SocketClose serverSocket;
         !Reinitiate the server
-        ServerCreateAndConnect ipController2,loggerPort2;
+        ServerCreateAndConnect ipController2,loggerPort2,"LOGGER";
         connected:=TRUE;
         RETRY;
     ENDPROC
