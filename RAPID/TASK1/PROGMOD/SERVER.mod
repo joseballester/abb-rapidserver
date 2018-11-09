@@ -93,8 +93,8 @@ MODULE SERVER
     !// EGM related
     VAR egmident egmID1;
     VAR egmstate egmSt1;
-    CONST egm_minmax egm_minmax_lin1:=[-1,1]; !in mm
-    CONST egm_minmax egm_minmax_rot1:=[-2,2];! in degees
+    CONST egm_minmax egm_minmax_lin1:=[-0.1,0.1]; !in mm
+    CONST egm_minmax egm_minmax_rot1:=[-0.1,0.1];! in degees
     VAR pose posecorEGM:=[[0,0,0],[1,0,0,0]];
     VAR pose posesenEGM:=[[0,0,0],[1,0,0,0]];
     CONST jointtarget jointsTargetEGM:=[[-8.19, 3.2, 40.82, -11.69, -44.63, 8.38],  [ 9E9, 9E9, 9E9, 9E9, 9E9, 9E9]];
@@ -254,7 +254,7 @@ MODULE SERVER
 
         !// By default, EGM is not running
         egmRunning:=FALSE;
-        
+
         !// We are not currently changing the frame
         frameMutex2:=FALSE;
 
