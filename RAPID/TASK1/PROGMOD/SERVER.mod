@@ -240,6 +240,7 @@ MODULE SERVER
         VAR num quatMag;
         VAR num ind;
         VAR bool move;
+        VAR string clientIP;
 
         !//Book error number for error handler
         BookErrNo ERR_MOTIONSUP;
@@ -251,6 +252,9 @@ MODULE SERVER
         CONNECT iMotionReset WITH resetMotion;
         ISignalDO USER_RESET_MOTION,1,iMotionReset;
 
+        !// By default, EGM is not running
+        egmRunning:=FALSE;
+        
         !// We are not currently changing the frame
         frameMutex2:=FALSE;
 
