@@ -98,7 +98,9 @@ MODULE SERVER
     VAR pose posecorEGM:=[[0,0,0],[1,0,0,0]];
     VAR pose posesenEGM:=[[0,0,0],[1,0,0,0]];
     CONST jointtarget jointsTargetEGM:=[[-8.19, 3.2, 40.82, -11.69, -44.63, 8.38],  [ 9E9, 9E9, 9E9, 9E9, 9E9, 9E9]];
-    
+    VAR num positiongain;
+    PERS bool egmRunning;
+
     !// RRI related
     ! Setup Interface Procedure
     PROC RRI_Open()
@@ -106,7 +108,7 @@ MODULE SERVER
         ! Send and receive data cyclic with 4 ms rate
         SiSetCyclic Host2, RobData, 4;
     ENDPROC
-    
+
     ! Close Interface Procedure
     PROC RRI_Close()
         ! Close the connection
@@ -122,7 +124,7 @@ MODULE SERVER
     !Method to parse the message received from a PC through the socket
     ! Loads values on:
     ! - instructionCode.
-    ! - idCode: 3 digit identifier of the command. 
+    ! - idCode: 3 digit identifier of the command.
     ! - nParams: Number of received parameters.
     ! - params{nParams}: Vector of received params.
     PROC ParseMsg(string msg)
@@ -175,24 +177,23 @@ MODULE SERVER
     !Handshake between server and client:
     ! - Creates socket.
     ! - Waits for incoming TCP connection.
-    PROC ServerCreateAndConnect(string ip,num port)
+    PROC ServerCreateAndConnect(string ip,num port,string modname)
         VAR string clientIP;
 
         SocketCreate serverSocket;
         SocketBind serverSocket,ip,port;
         SocketListen serverSocket;
-        TPWrite "SERVER: Server waiting for incomming connections ...";
+        TPWrite modname+": Waiting incoming connections...";
         WHILE SocketGetStatus(clientSocket)<>SOCKET_CONNECTED DO
             SocketAccept serverSocket,clientSocket\ClientAddress:=clientIP\Time:=WAIT_MAX;
             IF SocketGetStatus(clientSocket)<>SOCKET_CONNECTED THEN
-                TPWrite "SERVER: Problem serving an incomming connection.";
-                TPWrite "SERVER: Try reconnecting.";
+                TPWrite modname+": Problem serving an incoming connection.";
+                TPWrite modname+": Try reconnecting.";
             ENDIF
             !//Wait 0.5 seconds for the next reconnection
             WaitTime 0.5;
         ENDWHILE
-        TPWrite "SERVER: Connected to IP "+clientIP;
-
+        TPWrite modname+": Connected to "+clientIP+":"+NumToStr(port, 0);
     ENDPROC
 
     !//Parameter initialization
@@ -268,13 +269,13 @@ MODULE SERVER
         WaitUntil startLog2\PollRate:=0.01;
         ClkStart timer;
 
-        !//Initialization of WorkObject, Tool, Speed, Zone and Inertia. 
+        !//Initialization of WorkObject, Tool, Speed, Zone and Inertia.
         !//Get the joint limits from Robot Configuration.
         Initialize;
 
         !//Socket connection
         connected:=FALSE;
-        ServerCreateAndConnect ipController2,serverPort2;
+        ServerCreateAndConnect ipController2,serverPort2,"SERVER";
         connected:=TRUE;
 
         !//Infinite loop to serve commands
@@ -491,7 +492,7 @@ MODULE SERVER
                     ENDIF
                 ELSE
                     ok:=SERVER_BAD_MSG;
-                ENDIF     
+                ENDIF
             CASE 12:
                 !Inverse Kinematics Solver
                 IF nParams=7 THEN
@@ -500,14 +501,14 @@ MODULE SERVER
                         !// If not, then we cannot find the inverse kinematics for this pose
                         ok:=SERVER_BAD_IK;
                     ELSE
-                        !// Otherwise, let's normalize our quaternion 
+                        !// Otherwise, let's normalize our quaternion
                         cartesianTarget:=[[params{1},params{2},params{3}],
                             NOrient([params{4},params{5},params{6},params{7}]),
                             [0,0,0,0],
                             [9E9,9E9,9E9,9E9,9E9,9E9]];
                         ok:=SERVER_OK;
 
-                        !// Now calculate the joint angles, keeping in mind that if we specified an 
+                        !// Now calculate the joint angles, keeping in mind that if we specified an
                         !// impossible configuration, this will generate an error (See error handler below)
                         ik_result_j:=CalcJointT(cartesianTarget,currentTool2,\WObj:=currentWobj2);
 
@@ -725,37 +726,65 @@ MODULE SERVER
                 ELSE
                     ok:=SERVER_BAD_MSG;
                 ENDIF
-            CASE 70: 
-            
-                IF nParams=0 THEN
-					EGMReset egmID1;
-					EGMGetId egmID1;
-					egmSt1 := EGMGetState(egmID1);
-					TPWrite "EGM state: "\Num := egmSt1;
-					
-					IF egmSt1 <= EGM_STATE_CONNECTED THEN
-						! Set up the EGM data source: UdpUc server using device "EGMsensor:"and configuration "default"
-						EGMSetupUC ROB_1, egmID1, "default", "EGMsensor" \pose;
-					ENDIF
-					
-					!runEGM
-					
-					EGMActPose egmID1\Tool:=currentTool2 \WObj:=currentWobj2, posecorEGM,EGM_FRAME_WOBJ, posesenEGM, EGM_FRAME_WOBJ 
-					\x:=egm_minmax_lin1 \y:=egm_minmax_lin1 \z:=egm_minmax_lin1
-					\rx:=egm_minmax_rot1 \ry:=egm_minmax_rot1 \rz:=egm_minmax_rot1\LpFilter:=100\Samplerate:=4\MaxSpeedDeviation:= 40;
-			
-					EGMRunPose egmID1, EGM_STOP_HOLD \x \y \z\CondTime:=20 \RampInTime:=0.05\RampOutTime:=0.5;
-					egmSt1:=EGMGetState(egmID1); 
+                CASE 70:
+                    IF nParams=2 THEN
+                        IF params{1}=1 THEN
+                            ! Velocity mode
+                            positiongain:=0;
+                        ELSE
+                            ! Position mode with lower delay
+                            positiongain:=1;
+                        ENDIF
 
-					IF egmSt1 = EGM_STATE_CONNECTED THEN
-						TPWrite "Reset EGM instance egmID1";
-						EGMReset egmID1; 
-					ENDIF   
-                
-                    ok:=SERVER_OK;
-                ELSE
-                    ok:=SERVER_BAD_MSG;
-                ENDIF
+                        ! Sending confirmation before activating EGM
+                        sendString:=NumToStr(instructionCode,0);
+                        sendString:=sendString+" "+idCode;
+                        sendString:=sendString+" "+NumToStr(ok,0);
+                        sendString:=sendString+" "+NumToStr(ClkRead(timer),2);
+                        sendString:=sendString+" "+addString+ByteToStr(10\Char);
+                        SocketSend clientSocket\Str:=sendString;
+
+                        cartesianPose := CRobT(\Tool:=currentTool2\WObj:=currentWobj2);
+
+                        egmRunning := TRUE;
+
+                        ConfL\Off;
+                        MoveL cartesianPose, v100, fine, currentTool2 \Wobj:=currentWobj2;
+
+                        WaitTime 0.5;
+
+                        ! Then activating EGM
+              					EGMReset egmID1;
+              					EGMGetId egmID1;
+              					egmSt1 := EGMGetState(egmID1);
+              					TPWrite "SERVER: EGM connection started.";
+
+              					IF egmSt1 <= EGM_STATE_CONNECTED THEN
+              						! Set up the EGM data source: UdpUc server using device "EGMsensor:"and configuration "default"
+              						EGMSetupUC ROB_1, egmID1, "lowdelay", "EGMSensor" \pose, \CommTimeout:=0.1;
+              					ENDIF
+
+              					!runEGM
+
+              					EGMActPose egmID1\Tool:=currentTool2 \WObj:=currentWobj2, posecorEGM,EGM_FRAME_WOBJ, posesenEGM, EGM_FRAME_WOBJ
+              					\x:=egm_minmax_lin1 \y:=egm_minmax_lin1 \z:=egm_minmax_lin1
+              					\rx:=egm_minmax_rot1 \ry:=egm_minmax_rot1 \rz:=egm_minmax_rot1\LpFilter:=100\Samplerate:=4\MaxSpeedDeviation:= 1000;
+
+              					EGMRunPose egmID1, EGM_STOP_HOLD \x \y \z\CondTime:=params{2} \RampInTime:=0.05 \RampOutTime:=0.5 \PosCorrGain:=positiongain;
+              					egmSt1:=EGMGetState(egmID1);
+
+              					IF egmSt1 = EGM_STATE_CONNECTED THEN
+              						TPWrite "SERVER: EGM finished by timeout.";
+              						EGMReset egmID1;
+              					ENDIF
+                        egmRunning:=FALSE;
+
+                        ok:=SERVER_OK;
+                        ! To avoid sending a second confirmation, we set reconnected to TRUE
+                        reconnected:=TRUE;
+                    ELSE
+                        ok:=SERVER_BAD_MSG;
+                    ENDIF
 
             CASE 99:
                 !Close Connection
@@ -767,7 +796,7 @@ MODULE SERVER
                     SocketClose serverSocket;
 
                     !Reinitiate the server
-                    ServerCreateAndConnect ipController2,serverPort2;
+                    ServerCreateAndConnect ipController2,serverPort2,"SERVER";
                     connected:=TRUE;
                     reconnected:=TRUE;
                     ok:=SERVER_OK;
@@ -797,68 +826,75 @@ MODULE SERVER
             ENDIF
         ENDWHILE
     ERROR (LONG_JMP_ALL_ERR)
-        TPWrite "SERVER: ------";
-        TPWrite "SERVER: Error Handler:"+NumtoStr(ERRNO,0);
-        TEST ERRNO
-        CASE ERR_MOTIONSUP:
-            !TPWrite "SERVER: Moton suppervision error.";
-            !//Stop the robot motion
-            !StopMove;
-
-            !//Clear the current path from any residual motions in the path queue.
-            !ClearPath;
-
-            !//Just in case, set the target pose of the object to current location
-            !//When we retry the execution of the program, it will do a MoveL instruction to that target.
-            cartesianTarget:=CRobT(\Tool:=currentTool2\WObj:=currentWobj2);
-            jointsTarget:=CJointT();
-
-            !//Enable the motion of the robot 
-            StartMove;
-
-            !//Retry execution of the program.
-            !RETRY;
+        IF ERRNO=1129 THEN
+            ! No UdpUc data received (exception generated when user stops EGM controller in computer side)
+            TPWrite "SERVER: EGM finished by user.";
+            EGMReset egmID1;
+            egmRunning:=FALSE;
             TRYNEXT;
-            !May be we should do here TRYNEXT?
-
-        CASE ERR_SOCK_CLOSED:
-            TPWrite "SERVER: Client has closed connection.";
-            TPWrite "SERVER: Closing socket and restarting.";
+        ELSE
             TPWrite "SERVER: ------";
-            connected:=FALSE;
+            TPWrite "SERVER: Error Handler:"+NumtoStr(ERRNO,0);
+            TEST ERRNO
+            CASE ERR_MOTIONSUP:
+                !TPWrite "SERVER: Moton suppervision error.";
+                !//Stop the robot motion
+                !StopMove;
 
-            !//Closing the server
-            SocketClose clientSocket;
-            SocketClose serverSocket;
+                !//Clear the current path from any residual motions in the path queue.
+                !ClearPath;
 
-            !//Reinitiate the server
-            ServerCreateAndConnect ipController2,serverPort2;
-            reconnected:=TRUE;
-            connected:=TRUE;
-            RETRY;
+                !//Just in case, set the target pose of the object to current location
+                !//When we retry the execution of the program, it will do a MoveL instruction to that target.
+                cartesianTarget:=CRobT(\Tool:=currentTool2\WObj:=currentWobj2);
+                jointsTarget:=CJointT();
 
-        CASE ERR_ROBLIMIT:
-            !// Out of reach cartesian target.
-            ok:=SERVER_BAD_IK;
-            ik_result_j:=[[0,0,0,0,0,0],[0,9E9,9E9,9E9,9E9,9E9]];
+                !//Enable the motion of the robot
+                StartMove;
 
-            !// Skip the instruction computing the IK that caused the error
-            TRYNEXT;
+                !//Retry execution of the program.
+                !RETRY;
+                TRYNEXT;
+                !May be we should do here TRYNEXT?
 
-        DEFAULT:
-            TPWrite "SERVER: Unknown error.";
-            TPWrite "SERVER: Closing socket and restarting.";
-            TPWrite "SERVER: ------";
-            connected:=FALSE;
-            !//Closing the server
-            SocketClose clientSocket;
-            SocketClose serverSocket;
-            !//Reinitiate the server
-            ServerCreateAndConnect ipController2,serverPort2;
-            reconnected:=TRUE;
-            connected:=TRUE;
-            RETRY;
-        ENDTEST
+            CASE ERR_SOCK_CLOSED:
+                TPWrite "SERVER: Client has closed connection.";
+                TPWrite "SERVER: Closing socket and restarting.";
+                TPWrite "SERVER: ------";
+                connected:=FALSE;
+
+                !//Closing the server
+                SocketClose clientSocket;
+                SocketClose serverSocket;
+
+                !//Reinitiate the server
+                ServerCreateAndConnect ipController2,serverPort2,"SERVER";
+                reconnected:=TRUE;
+                connected:=TRUE;
+                RETRY;
+
+            CASE ERR_ROBLIMIT:
+                !// Out of reach cartesian target.
+                ok:=SERVER_BAD_IK;
+                ik_result_j:=[[0,0,0,0,0,0],[0,9E9,9E9,9E9,9E9,9E9]];
+
+                !// Skip the instruction computing the IK that caused the error
+                TRYNEXT;
+
+            DEFAULT:
+                TPWrite "SERVER: Unknown error. Closing socket and restarting.";
+                TPWrite "SERVER: ------";
+                connected:=FALSE;
+                !//Closing the server
+                SocketClose clientSocket;
+                SocketClose serverSocket;
+                !//Reinitiate the server
+                ServerCreateAndConnect ipController2,serverPort2,"SERVER";
+                reconnected:=TRUE;
+                connected:=TRUE;
+                RETRY;
+            ENDTEST
+        ENDIF
     ENDPROC
 
     TRAP resetMotion
@@ -867,7 +903,7 @@ MODULE SERVER
         !//It signals the need to restart the motion of the robot.
 
         !//Note that the motion encoutered a collision
-        !//This will show up in the message reply. 
+        !//This will show up in the message reply.
         ok:=SERVER_COLLISION;
         collision:=1;
 
@@ -875,8 +911,8 @@ MODULE SERVER
             !Stop the robot motion
             StopMove;
 
-            !//If the move instruction is complete, we do not need to raise ERR_MOTIONSUP 
-            !//to restart the motion of the robot. 
+            !//If the move instruction is complete, we do not need to raise ERR_MOTIONSUP
+            !//to restart the motion of the robot.
             TPWrite "SERVER: ------";
             TPWrite "SERVER: Motion suppervision error happened after";
             TPWrite "SERVER: move instruction was completed.";
